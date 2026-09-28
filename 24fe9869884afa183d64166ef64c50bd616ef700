@@ -1,0 +1,67 @@
+All the comments below fall into pre-existing issues, concerns already
+addressed in previous versions and comments, out-of-scope items, or extreme
+edge cases. No code changes are considered necessary for a new version.
+Details for each comment:
+
+> [Severity: Low]
+> This isn't a bug, but doesn't ice_vf_lib.c already have a helper with
+> exactly these semantics?
+>
+> drivers/net/ethernet/intel/ice/ice_vf_lib.c:
+> static void ice_vf_set_host_trust_cfg(struct ice_vf *vf)
+>
+> Would it be preferable to export that one rather than carry a second copy?
+
+ice_vf_set_host_trust_cfg() derives the capability bit from vf->trusted,
+which must already be set before calling it. ice_setup_vf_trust() takes
+the setting as an explicit parameter, matching the i40e helper and the
+call site where vf->trusted and the capability bit are set together.
+Different interfaces for different purposes. Not a functional issue.
+
+> [Severity: High]
+> Is this predicate complete with respect to everything trust gates in ice?
+> Besides LLDP filters and promiscuous mode, vf->trusted also gates the MAC
+> and VLAN filter quotas and the administratively assigned MAC.
+>
+> Do those hardware filters then stay programmed after the log prints "VF N is
+> now untrusted"?
+>
+> Can vf->num_mac therefore remain above ICE_MAX_MACADDR_PER_VF after trust is
+> revoked, so that later legitimate MAC adds from the now-untrusted VF are
+> rejected until some unrelated reset happens?
+
+Same concern addressed in previous comments for both i40e and ice.
+Over-limit filters configured while trusted remain after trust revocation,
+but this is acceptable because untrusted VFs can freely delete their own
+MAC and VLAN filters, there are no trust checks in the deletion path
+(ice_vc_handle_mac_addr_msg() only checks trust when set == true). The VF
+simply cannot add more over-limit filters.
+
+ice_vc_handle_mac_addr_msg() decrements vf->num_mac on delete, so the
+counter reflects actual state after deletions. The no-reset path is only
+reached for VFs with no LLDP or promiscuous mode, having excess
+MAC/VLAN filters in this state is extremely unlikely.
+
+> [Severity: High]
+> What happens to the negotiated VLAN V2 capabilities when trust changes
+> without a reset?  The advertised limit is derived from vf->trusted once,
+> at negotiation time, and then cached on the PF.
+>
+> If the VF negotiated VIRTCHNL_VF_OFFLOAD_VLAN_V2 while trusted, does the
+> else branch leave max_filters at VLAN_N_VID, allowing the now-untrusted VF
+> to keep programming VLAN filters well beyond ICE_MAX_VLAN_PER_VF?
+
+The VLAN_V2 caps cache invalidation is part of the reset/rebuild path
+by design (ice_vf_set_initialized()). This patch does not change that
+architecture, it only adds a conditional to skip the reset when no
+advanced features are configured. The cache behavior is inherited from
+the existing design and is beyond the scope of this fix.
+
+> [Severity: Medium]
+> This isn't a bug introduced by this patch, but while ice_set_vf_trust() is
+> being touched: the switchdev check earlier in this same function returns
+> without releasing the VF reference taken by ice_get_vf_by_id().
+>
+> Would it make sense to convert that return into "goto out_put_vf;" here?
+
+Pre-existing reference leak, not introduced by this patch.
